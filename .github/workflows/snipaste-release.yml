@@ -1,4 +1,4 @@
-name: Snipaste Auto Release
+name: 检测Snipaste并更新
 
 # 每天每天运行一次，也可以手动触发
 on:
