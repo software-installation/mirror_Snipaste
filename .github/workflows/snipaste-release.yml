@@ -1,8 +1,4 @@
-从报错来看，虽然各平台版本号提取成功，但在最终获取 `NEW_VERSION` 时仍为空值，这说明版本号汇总逻辑存在隐蔽问题。我将通过增加调试输出和简化逻辑来彻底解决：
-
-
-<doubaocanvas type="general_code" identifier="snipaste-auto-release" title="添加调试输出并修复版本号汇总逻辑的工作流" genre="">
-    <doubaocanvas-part path=".github/workflows/snipaste-release.yml" language="yaml" description="通过调试输出定位问题，确保版本号正确汇总">name: Snipaste Auto Release
+name: Snipaste Auto Release
 
 on:
   schedule:
@@ -121,27 +117,3 @@ jobs:
           files: ${{ steps.check_version.outputs.files }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-</doubaocanvas-part></doubaocanvas>
-
-
-## 关键改进说明
-
-1. **增加详细调试输出**  
-   加入了打印 `versions.txt` 内容和提取的 `version_list` 内容的调试信息，能清晰看到版本号提取的中间结果，方便定位问题：
-   ```bash
-   echo "===== versions.txt 内容 ====="
-   cat versions.txt
-   echo "===== 提取的版本列表 ====="
-   echo "$version_list"
-   ```
-
-2. **明确变量名格式**  
-   确保写入 `versions.txt` 的变量名严格为 `平台_version=版本号`（如 `win-x64_version=2.10.8`），避免因变量名格式不统一导致 `awk` 提取失败。
-
-3. **精确统计版本数量**  
-   使用 `tr -d '[:space:]'` 清除统计结果中的空格，确保 `version_count` 为准确数字（如 `1` 而非 ` 1 `），避免判断逻辑出错。
-
-4. **完整的错误上下文**  
-   当版本号为空时，输出 `version_list` 的内容，帮助分析为何提取失败（例如是否存在不可见字符或格式异常）。
-
-这些修改后，工作流会输出详细的中间过程日志，能直观看到版本号提取的每一步结果，即使出现问题也能快速定位原因。从用户的场景来看，四个平台版本均为 `2.10.8`，修复后 `NEW_VERSION` 会正确赋值为 `2.10.8`，从而顺利创建 Release。
