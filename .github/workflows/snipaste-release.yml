@@ -1,3 +1,5 @@
+name: Snipaste Auto Release
+
 on:
   schedule:
     - cron: '0 0 * * *'  # 每天UTC时间0点运行
@@ -18,7 +20,13 @@ jobs:
       - name: Get latest release version
         id: get_latest_release
         run: |
-          LATEST_RELEASE=$(curl -s "https://api.github.com/repos/${{ github.repository }}/releases/latest" | jq -r '.tag_name // "0.0"')
+          # 获取最新Release版本号，处理仓库无Release的情况
+          response=$(curl -s "https://api.github.com/repos/${{ github.repository }}/releases/latest")
+          if echo "$response" | jq -e '.tag_name' > /dev/null; then
+            LATEST_RELEASE=$(echo "$response" | jq -r '.tag_name')
+          else
+            LATEST_RELEASE="0.0"
+          fi
           echo "Latest release: $LATEST_RELEASE"
           echo "latest_release=$LATEST_RELEASE" >> $GITHUB_OUTPUT
 
@@ -34,11 +42,12 @@ jobs:
           )
           
           mkdir -p snipaste_files
+          touch versions.txt filenames.txt
           
           # 下载文件并提取版本号
           for platform in "${!urls[@]}"; do
             echo "Downloading $platform..."
-            # 先获取最终重定向的URL，用于提取文件名和版本号
+            # 获取最终重定向URL
             final_url=$(curl -sIL -o /dev/null -w "%{url_effective}" "${urls[$platform]}")
             filename=$(basename "$final_url")
             # 下载文件
@@ -46,15 +55,12 @@ jobs:
             
             echo "Downloaded file: $filename"
             
-            # 改进的正则表达式：
-            # 1. 支持更多文件后缀（zip/dmg/AppImage等）
-            # 2. 兼容版本号后可能的平台标识（如-x64/-x86_64等）
-            # 3. 严格匹配数字.数字(可选.数字)的版本格式
+            # 提取版本号
             version=$(echo "$filename" | sed -E 's/^Snipaste-([0-9]+\.[0-9]+(\.[0-9]+)?).*$/\1/')
             
-            # 验证版本号格式是否有效
+            # 验证版本号格式
             if ! echo "$version" | grep -qE '^[0-9]+\.[0-9]+(\.[0-9]+)?$'; then
-              echo "Error: 无法从文件名 $filename 中提取有效版本号，提取结果为: $version"
+              echo "Error: 无法从文件名 $filename 中提取有效版本号"
               exit 1
             fi
             
@@ -73,12 +79,18 @@ jobs:
             exit 1
           fi
           
-          NEW_VERSION=$(echo "$version_list" | head -n1)
+          # 确保正确提取新版本号
+          NEW_VERSION=$(echo "$version_list" | head -n 1 | tr -d '[:space:]')
+          if [ -z "$NEW_VERSION" ]; then
+            echo "Error: 未能提取有效的新版本号"
+            exit 1
+          fi
+          
           echo "Detected version: $NEW_VERSION"
           echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
 
           # 收集所有文件名用于上传
-          files_to_upload=$(awk -F'=' '/_filename/ {print "snipaste_files/" $2}' filenames.txt | tr '\n' ' ')
+          files_to_upload=$(awk -F'=' '/_filename/ {print "snipaste_files/" $2}' filenames.txt | tr '\n' ' ' | sed 's/ $//')
           echo "files=$files_to_upload" >> $GITHUB_OUTPUT
 
       - name: Create release if new version
