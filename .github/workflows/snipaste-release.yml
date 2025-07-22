@@ -6,7 +6,7 @@ on:
   workflow_dispatch:  # 允许手动触发
 
 permissions:
-  contents: write  # 确保内容写入权限
+  contents: write
 
 jobs:
   check-and-release:
@@ -42,64 +42,71 @@ jobs:
             ["linux"]="https://dl.snipaste.com/linux"
           )
           
-          # 创建并进入文件目录，简化路径处理
           mkdir -p snipaste_files
-          cd snipaste_files
+          > file_list.txt
+          > version_list.txt
           
-          # 下载文件
+          # 遍历所有平台下载文件
           for platform in "${!urls[@]}"; do
-            echo "Downloading $platform..."
-            final_url="${urls[$platform]}"
-            final_url=$(curl -sIL -o /dev/null -w "%{url_effective}" "$url")
+            # 获取当前平台的URL（修复变量引用错误）
+            current_url="${urls[$platform]}"
+            echo "===== 开始下载 $platform ====="
+            echo "使用URL: $current_url"
+            
+            # 获取最终重定向的URL
+            echo "获取最终下载地址..."
+            final_url=$(curl -sIL -o /dev/null -w "%{url_effective}" "$current_url")
+            if [ -z "$final_url" ] || [ "$final_url" = "$current_url" ]; then
+              echo "Error: 无法获取有效的重定向URL，可能链接失效"
+              exit 1
+            fi
+            echo "最终下载地址: $final_url"
             filename=$(basename "$final_url")
             
-            # 下载文件并验证
-            if ! curl -L -o "$filename" "$url"; then
-              echo "Error: 下载 $platform 失败"
-              exit 1
-            fi
-            if [ ! -s "$filename" ]; then
-              echo "Error: 文件 $filename 为空或不存在"
+            # 下载文件（使用正确的当前URL）
+            echo "开始下载文件: $filename..."
+            if ! curl -L -o "snipaste_files/$filename" "$current_url"; then
+              echo "Error: curl下载失败，错误代码: $?"
               exit 1
             fi
             
-            echo "Downloaded file: $filename"
-            echo "$filename" >> ../file_list.txt
+            # 验证文件
+            if [ ! -f "snipaste_files/$filename" ]; then
+              echo "Error: 文件未找到: snipaste_files/$filename"
+              exit 1
+            fi
+            if [ ! -s "snipaste_files/$filename" ]; then
+              echo "Error: 文件为空: snipaste_files/$filename"
+              exit 1
+            fi
+            echo "下载成功，文件大小: $(du -h "snipaste_files/$filename" | cut -f1)"
             
             # 提取版本号
             version=$(echo "$filename" | sed -E 's/^Snipaste-([0-9]+\.[0-9]+(\.[0-9]+)?).*$/\1/')
             if ! echo "$version" | grep -qE '^[0-9]+\.[0-9]+(\.[0-9]+)?$'; then
-              echo "Error: 无法从文件名 $filename 提取版本号"
+              echo "Error: 无法从文件名提取版本号: $filename"
               exit 1
             fi
-            echo "$version" >> ../version_list.txt
+            echo "提取的版本号: $version"
+            
+            # 记录文件和版本
+            echo "$filename" >> file_list.txt
+            echo "$version" >> version_list.txt
           done
           
-          # 返回上级目录
-          cd ..
-          
-          # 验证所有版本一致
+          # 验证版本一致性
           version_list=$(sort -u version_list.txt)
           version_count=$(echo "$version_list" | wc -l | tr -d '[:space:]')
           if [ "$version_count" -ne 1 ]; then
-            echo "Error: 版本不一致 - $version_list"
+            echo "Error: 版本不一致: $version_list"
             exit 1
           fi
           NEW_VERSION=$(echo "$version_list" | head -n 1 | tr -d '[:space:]')
+          echo "确认版本号: $NEW_VERSION"
           
-          # 准备文件列表（使用相对路径）
+          # 准备文件列表
           files_to_upload=$(cat file_list.txt | while read -r file; do echo "snipaste_files/$file"; done | tr '\n' ' ')
-          
-          # 调试信息 - 确认文件存在且路径正确
-          echo "===== 最终文件列表及状态 ====="
-          for file in $files_to_upload; do
-            if [ -f "$file" ]; then
-              echo "存在: $file (大小: $(du -h "$file" | cut -f1))"
-            else
-              echo "不存在: $file"
-            fi
-          done
-          echo "=============================="
+          echo "待上传文件: $files_to_upload"
           
           echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
           echo "files_to_upload=$files_to_upload" >> $GITHUB_OUTPUT
@@ -117,7 +124,6 @@ jobs:
             - Windows x86
             - macOS
             - Linux
-          # 明确列出每个文件，避免通配符问题
           files: ${{ steps.check_version.outputs.files_to_upload }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
