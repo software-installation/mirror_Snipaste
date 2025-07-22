@@ -1,6 +1,5 @@
-name: 检测Snipaste并更新
+name: Snipaste Auto Release
 
-# 每天每天运行一次，也可以手动触发
 on:
   schedule:
     - cron: '0 0 * * *'  # 每天UTC时间0点运行
@@ -15,15 +14,13 @@ jobs:
 
       - name: Set up environment
         run: |
-          # 安装必要工具
           sudo apt-get update
           sudo apt-get install -y jq curl
 
       - name: Get latest release version
         id: get_latest_release
         run: |
-          # 获取最新的Release版本号，如果没有则设为0.0.0
-          LATEST_RELEASE=$(curl -s "https://api.github.com/repos/${{ github.repository }}/releases/latest" | jq -r '.tag_name // "0.0.0"')
+          LATEST_RELEASE=$(curl -s "https://api.github.com/repos/${{ github.repository }}/releases/latest" | jq -r '.tag_name // "0.0"')
           echo "Latest release: $LATEST_RELEASE"
           echo "latest_release=$LATEST_RELEASE" >> $GITHUB_OUTPUT
 
@@ -38,35 +35,50 @@ jobs:
             ["linux"]="https://dl.snipaste.com/linux"
           )
           
-          # 创建临时目录
           mkdir -p snipaste_files
           
           # 下载文件并提取版本号
           for platform in "${!urls[@]}"; do
             echo "Downloading $platform..."
-            # 跟随重定向并保存文件
-            curl -L -o "snipaste_files/$platform.zip" "${urls[$platform]}"
+            # 下载文件并保留原始文件名
+            curl -L -o "snipaste_files/temp_file" "${urls[$platform]}"
             
-            # 从文件名提取版本号
-            filename=$(basename "snipaste_files/$platform.zip")
-            version=$(echo "$filename" | sed -E 's/Snipaste-(.*)-?.*\.zip/\1/')
+            # 获取最终的文件名（通过查看重定向后的URL）
+            final_url=$(curl -sIL -o /dev/null -w "%{url_effective}" "${urls[$platform]}")
+            filename=$(basename "$final_url")
+            mv "snipaste_files/temp_file" "snipaste_files/$filename"
+            
+            echo "Downloaded file: $filename"
+            
+            # 改进的版本提取正则表达式，支持x.y和x.y.z格式
+            # 匹配类似2.4、2.10.8、3.5.2等格式的版本号
+            version=$(echo "$filename" | sed -E 's/Snipaste-([0-9]+\.[0-9]+(\.[0-9]+)?)-?.*\.(zip|dmg|tar\.gz)/\1/')
+            
+            if [ -z "$version" ]; then
+              echo "Error: Could not extract version from filename $filename"
+              exit 1
+            fi
+            
             echo "Extracted version for $platform: $version"
-            
-            # 保存版本号
             echo "$platform_version=$version" >> versions.txt
+            echo "$platform_filename=$filename" >> filenames.txt
           done
           
           # 检查所有平台版本是否一致
-          versions=$(awk -F'=' '{print $2}' versions.txt | sort -u)
-          if [ $(echo "$versions" | wc -l) -ne 1 ]; then
+          version_list=$(awk -F'=' '/_version/ {print $2}' versions.txt | sort -u)
+          if [ $(echo "$version_list" | wc -l) -ne 1 ]; then
             echo "Versions are not consistent across platforms!"
-            echo "$versions"
+            echo "$version_list"
             exit 1
           fi
           
-          NEW_VERSION=$(echo "$versions" | head -n1)
+          NEW_VERSION=$(echo "$version_list" | head -n1)
           echo "Detected version: $NEW_VERSION"
           echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+
+          # 收集所有文件名用于上传
+          files_to_upload=$(awk -F'=' '/_filename/ {print "snipaste_files/" $2}' filenames.txt | tr '\n' ' ')
+          echo "files=$files_to_upload" >> $GITHUB_OUTPUT
 
       - name: Create release if new version
         if: steps.check_version.outputs.new_version != steps.get_latest_release.outputs.latest_release
@@ -81,10 +93,6 @@ jobs:
             - Windows x86
             - macOS
             - Linux
-          files: |
-            snipaste_files/win-x64.zip
-            snipaste_files/win-x86.zip
-            snipaste_files/mac.zip
-            snipaste_files/linux.zip
+          files: ${{ steps.check_version.outputs.files }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
