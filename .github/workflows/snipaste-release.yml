@@ -1,0 +1,90 @@
+name: Snipaste Auto Release
+
+# 每天每天运行一次，也可以手动触发
+on:
+  schedule:
+    - cron: '0 0 * * *'  # 每天UTC时间0点运行
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  check-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up environment
+        run: |
+          # 安装必要工具
+          sudo apt-get update
+          sudo apt-get install -y jq curl
+
+      - name: Get latest release version
+        id: get_latest_release
+        run: |
+          # 获取最新的Release版本号，如果没有则设为0.0.0
+          LATEST_RELEASE=$(curl -s "https://api.github.com/repos/${{ github.repository }}/releases/latest" | jq -r '.tag_name // "0.0.0"')
+          echo "Latest release: $LATEST_RELEASE"
+          echo "latest_release=$LATEST_RELEASE" >> $GITHUB_OUTPUT
+
+      - name: Check for new version and download files
+        id: check_version
+        run: |
+          # 定义下载链接
+          declare -A urls=(
+            ["win-x64"]="https://dl.snipaste.com/win-x64"
+            ["win-x86"]="https://dl.snipaste.com/win-x86"
+            ["mac"]="https://dl.snipaste.com/mac"
+            ["linux"]="https://dl.snipaste.com/linux"
+          )
+          
+          # 创建临时目录
+          mkdir -p snipaste_files
+          
+          # 下载文件并提取版本号
+          for platform in "${!urls[@]}"; do
+            echo "Downloading $platform..."
+            # 跟随重定向并保存文件
+            curl -L -o "snipaste_files/$platform.zip" "${urls[$platform]}"
+            
+            # 从文件名提取版本号
+            filename=$(basename "snipaste_files/$platform.zip")
+            version=$(echo "$filename" | sed -E 's/Snipaste-(.*)-?.*\.zip/\1/')
+            echo "Extracted version for $platform: $version"
+            
+            # 保存版本号
+            echo "$platform_version=$version" >> versions.txt
+          done
+          
+          # 检查所有平台版本是否一致
+          versions=$(awk -F'=' '{print $2}' versions.txt | sort -u)
+          if [ $(echo "$versions" | wc -l) -ne 1 ]; then
+            echo "Versions are not consistent across platforms!"
+            echo "$versions"
+            exit 1
+          fi
+          
+          NEW_VERSION=$(echo "$versions" | head -n1)
+          echo "Detected version: $NEW_VERSION"
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Create release if new version
+        if: steps.check_version.outputs.new_version != steps.get_latest_release.outputs.latest_release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.check_version.outputs.new_version }}
+          name: Snipaste ${{ steps.check_version.outputs.new_version }}
+          body: |
+            Auto-released version ${{ steps.check_version.outputs.new_version }}
+            Contains builds for:
+            - Windows x64
+            - Windows x86
+            - macOS
+            - Linux
+          files: |
+            snipaste_files/win-x64.zip
+            snipaste_files/win-x86.zip
+            snipaste_files/mac.zip
+            snipaste_files/linux.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
