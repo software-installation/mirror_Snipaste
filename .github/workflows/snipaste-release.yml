@@ -1,5 +1,3 @@
-name: Snipaste Auto Release
-
 on:
   schedule:
     - cron: '0 0 * * *'  # 每天UTC时间0点运行
@@ -27,7 +25,7 @@ jobs:
       - name: Check for new version and download files
         id: check_version
         run: |
-          # 定义下载链接
+          # 定义下载链接和对应平台
           declare -A urls=(
             ["win-x64"]="https://dl.snipaste.com/win-x64"
             ["win-x86"]="https://dl.snipaste.com/win-x86"
@@ -40,22 +38,23 @@ jobs:
           # 下载文件并提取版本号
           for platform in "${!urls[@]}"; do
             echo "Downloading $platform..."
-            # 下载文件并保留原始文件名
-            curl -L -o "snipaste_files/temp_file" "${urls[$platform]}"
-            
-            # 获取最终的文件名（通过查看重定向后的URL）
+            # 先获取最终重定向的URL，用于提取文件名和版本号
             final_url=$(curl -sIL -o /dev/null -w "%{url_effective}" "${urls[$platform]}")
             filename=$(basename "$final_url")
-            mv "snipaste_files/temp_file" "snipaste_files/$filename"
+            # 下载文件
+            curl -L -o "snipaste_files/$filename" "${urls[$platform]}"
             
             echo "Downloaded file: $filename"
             
-            # 改进的版本提取正则表达式，支持x.y和x.y.z格式
-            # 匹配类似2.4、2.10.8、3.5.2等格式的版本号
-            version=$(echo "$filename" | sed -E 's/Snipaste-([0-9]+\.[0-9]+(\.[0-9]+)?)-?.*\.(zip|dmg|tar\.gz)/\1/')
+            # 改进的正则表达式：
+            # 1. 支持更多文件后缀（zip/dmg/AppImage等）
+            # 2. 兼容版本号后可能的平台标识（如-x64/-x86_64等）
+            # 3. 严格匹配数字.数字(可选.数字)的版本格式
+            version=$(echo "$filename" | sed -E 's/^Snipaste-([0-9]+\.[0-9]+(\.[0-9]+)?).*$/\1/')
             
-            if [ -z "$version" ]; then
-              echo "Error: Could not extract version from filename $filename"
+            # 验证版本号格式是否有效
+            if ! echo "$version" | grep -qE '^[0-9]+\.[0-9]+(\.[0-9]+)?$'; then
+              echo "Error: 无法从文件名 $filename 中提取有效版本号，提取结果为: $version"
               exit 1
             fi
             
@@ -66,9 +65,11 @@ jobs:
           
           # 检查所有平台版本是否一致
           version_list=$(awk -F'=' '/_version/ {print $2}' versions.txt | sort -u)
-          if [ $(echo "$version_list" | wc -l) -ne 1 ]; then
-            echo "Versions are not consistent across platforms!"
-            echo "$version_list"
+          version_count=$(echo "$version_list" | wc -l)
+          
+          if [ "$version_count" -ne 1 ]; then
+            echo "Error: 各平台版本号不一致！"
+            echo "检测到的版本号: $version_list"
             exit 1
           fi
           
