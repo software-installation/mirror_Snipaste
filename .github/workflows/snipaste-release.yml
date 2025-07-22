@@ -1,4 +1,8 @@
-name: Snipaste Auto Release
+从报错来看，虽然各平台版本号提取成功，但在最终获取 `NEW_VERSION` 时仍为空值，这说明版本号汇总逻辑存在隐蔽问题。我将通过增加调试输出和简化逻辑来彻底解决：
+
+
+<doubaocanvas type="general_code" identifier="snipaste-auto-release" title="添加调试输出并修复版本号汇总逻辑的工作流" genre="">
+    <doubaocanvas-part path=".github/workflows/snipaste-release.yml" language="yaml" description="通过调试输出定位问题，确保版本号正确汇总">name: Snipaste Auto Release
 
 on:
   schedule:
@@ -20,7 +24,6 @@ jobs:
       - name: Get latest release version
         id: get_latest_release
         run: |
-          # 获取最新Release版本号，处理仓库无Release的情况
           response=$(curl -s "https://api.github.com/repos/${{ github.repository }}/releases/latest")
           if echo "$response" | jq -e '.tag_name' > /dev/null; then
             LATEST_RELEASE=$(echo "$response" | jq -r '.tag_name')
@@ -33,7 +36,6 @@ jobs:
       - name: Check for new version and download files
         id: check_version
         run: |
-          # 定义下载链接和对应平台
           declare -A urls=(
             ["win-x64"]="https://dl.snipaste.com/win-x64"
             ["win-x86"]="https://dl.snipaste.com/win-x86"
@@ -42,36 +44,44 @@ jobs:
           )
           
           mkdir -p snipaste_files
-          touch versions.txt filenames.txt
+          > versions.txt  # 确保文件为空开始
+          > filenames.txt
           
-          # 下载文件并提取版本号
           for platform in "${!urls[@]}"; do
             echo "Downloading $platform..."
-            # 获取最终重定向URL
             final_url=$(curl -sIL -o /dev/null -w "%{url_effective}" "${urls[$platform]}")
             filename=$(basename "$final_url")
-            # 下载文件
             curl -L -o "snipaste_files/$filename" "${urls[$platform]}"
             
             echo "Downloaded file: $filename"
             
-            # 提取版本号
             version=$(echo "$filename" | sed -E 's/^Snipaste-([0-9]+\.[0-9]+(\.[0-9]+)?).*$/\1/')
-            
-            # 验证版本号格式
             if ! echo "$version" | grep -qE '^[0-9]+\.[0-9]+(\.[0-9]+)?$'; then
-              echo "Error: 无法从文件名 $filename 中提取有效版本号"
+              echo "Error: 无法从文件名 $filename 中提取有效版本号，提取结果为: $version"
               exit 1
             fi
             
             echo "Extracted version for $platform: $version"
-            echo "$platform_version=$version" >> versions.txt
-            echo "$platform_filename=$filename" >> filenames.txt
+            echo "${platform}_version=$version" >> versions.txt  # 明确变量名格式
+            echo "${platform}_filename=$filename" >> filenames.txt
           done
           
-          # 检查所有平台版本是否一致
+          # 调试：打印versions.txt内容
+          echo "===== versions.txt 内容 ====="
+          cat versions.txt
+          echo "============================="
+          
+          # 提取所有版本号并去重
           version_list=$(awk -F'=' '/_version/ {print $2}' versions.txt | sort -u)
-          version_count=$(echo "$version_list" | wc -l)
+          
+          # 调试：打印提取的版本列表
+          echo "===== 提取的版本列表 ====="
+          echo "$version_list"
+          echo "=========================="
+          
+          # 检查版本数量
+          version_count=$(echo "$version_list" | wc -l | tr -d '[:space:]')
+          echo "检测到的唯一版本数量: $version_count"
           
           if [ "$version_count" -ne 1 ]; then
             echo "Error: 各平台版本号不一致！"
@@ -79,17 +89,19 @@ jobs:
             exit 1
           fi
           
-          # 确保正确提取新版本号
+          # 提取新版本号，确保无空格
           NEW_VERSION=$(echo "$version_list" | head -n 1 | tr -d '[:space:]')
+          
+          # 再次检查版本号是否为空
           if [ -z "$NEW_VERSION" ]; then
-            echo "Error: 未能提取有效的新版本号"
+            echo "Error: 未能提取有效的新版本号，version_list为: $version_list"
             exit 1
           fi
           
           echo "Detected version: $NEW_VERSION"
           echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
 
-          # 收集所有文件名用于上传
+          # 收集文件
           files_to_upload=$(awk -F'=' '/_filename/ {print "snipaste_files/" $2}' filenames.txt | tr '\n' ' ' | sed 's/ $//')
           echo "files=$files_to_upload" >> $GITHUB_OUTPUT
 
@@ -109,3 +121,27 @@ jobs:
           files: ${{ steps.check_version.outputs.files }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+</doubaocanvas-part></doubaocanvas>
+
+
+## 关键改进说明
+
+1. **增加详细调试输出**  
+   加入了打印 `versions.txt` 内容和提取的 `version_list` 内容的调试信息，能清晰看到版本号提取的中间结果，方便定位问题：
+   ```bash
+   echo "===== versions.txt 内容 ====="
+   cat versions.txt
+   echo "===== 提取的版本列表 ====="
+   echo "$version_list"
+   ```
+
+2. **明确变量名格式**  
+   确保写入 `versions.txt` 的变量名严格为 `平台_version=版本号`（如 `win-x64_version=2.10.8`），避免因变量名格式不统一导致 `awk` 提取失败。
+
+3. **精确统计版本数量**  
+   使用 `tr -d '[:space:]'` 清除统计结果中的空格，确保 `version_count` 为准确数字（如 `1` 而非 ` 1 `），避免判断逻辑出错。
+
+4. **完整的错误上下文**  
+   当版本号为空时，输出 `version_list` 的内容，帮助分析为何提取失败（例如是否存在不可见字符或格式异常）。
+
+这些修改后，工作流会输出详细的中间过程日志，能直观看到版本号提取的每一步结果，即使出现问题也能快速定位原因。从用户的场景来看，四个平台版本均为 `2.10.8`，修复后 `NEW_VERSION` 会正确赋值为 `2.10.8`，从而顺利创建 Release。
