@@ -25,29 +25,40 @@ def get_actual_url(redirect_url):
         return None
 
 def extract_version_and_filename(url):
-    """从URL中提取版本号和文件名"""
+    """从URL中提取版本号和文件名（兼容多种格式）"""
     if not url:
         return None, None
     
-    # 匹配文件名格式，例如 Snipaste-2.10.8-x64.zip
-    pattern = r"Snipaste-(\d+\.\d+\.\d+)-([\w-]+)\.(zip|dmg|tar\.gz)"
+    # 增强正则：支持 x.y.z（如2.10.8）、x.y（如2.4），兼容不同后缀和平台格式
+    # 匹配模式：Snipaste-版本号-（可选平台）.后缀
+    pattern = r"Snipaste-(\d+\.\d+(?:\.\d+)?)(?:-([\w_]+))?\.(zip|dmg|tar\.gz|AppImage)"
     match = re.search(pattern, url)
     
     if match:
-        version = match.group(1)
-        filename = f"Snipaste-{version}-{match.group(2)}.{match.group(3)}"
+        version = match.group(1)  # 提取版本号（如2.10.8或2.4）
+        platform_part = match.group(2) or ""  # 可选平台部分（如x64、x86_64）
+        ext = match.group(3)  # 后缀（如zip、dmg）
+        
+        # 构建文件名（确保唯一性）
+        if platform_part:
+            filename = f"Snipaste-{version}-{platform_part}.{ext}"
+        else:
+            filename = f"Snipaste-{version}.{ext}"
         return version, filename
     return None, None
 
 def load_existing_versions():
-    """加载已备份的版本记录"""
-    if os.path.exists(VERSIONS_FILE):
-        with open(VERSIONS_FILE, 'r') as f:
-            try:
-                return json.load(f)
-            except:
-                return []
-    return []
+    """加载已备份的版本记录（确保文件存在）"""
+    if not os.path.exists(VERSIONS_FILE):
+        with open(VERSIONS_FILE, 'w') as f:
+            json.dump([], f)  # 初始化空文件
+        return []
+    
+    with open(VERSIONS_FILE, 'r') as f:
+        try:
+            return json.load(f)
+        except:
+            return []  # 文件损坏时返回空列表
 
 def save_version(version):
     """保存新备份的版本记录"""
@@ -78,8 +89,7 @@ def download_file(url, save_path):
         return False
 
 def create_release_and_upload(version, files):
-    """创建    在GitHub上创建Release并上传文件
-    """
+    """在GitHub上创建Release并上传文件"""
     try:
         # 初始化GitHub客户端
         g = Github(os.environ['GITHUB_TOKEN'])
@@ -132,7 +142,12 @@ def main():
         }
         print(f"{platform}: 版本 {version}, 文件 {filename}")
     
-    # 检查所有平台是否版本一致
+    # 检查是否有可用的版本信息
+    if not version_info:
+        print("未获取到任何有效版本信息，退出")
+        return
+    
+    # 检查所有平台是否版本一致（允许部分平台失败，但成功的必须版本统一）
     versions = list(set(info["version"] for info in version_info.values()))
     if len(versions) != 1:
         print(f"检测到不一致的版本: {versions}，取消执行备份")
@@ -144,23 +159,19 @@ def main():
     # 检查是否已备份该版本
     existing_versions = load_existing_versions()
     if current_version in existing_versions:
-        print(f"版本 {current_version} 已备份备份，无需重复操作")
+        print(f"版本 {current_version} 已备份，无需重复操作")
         return
     
-    # 下载所有文件
+    # 下载所有可用文件（即使部分平台失败，也继续处理成功的）
     downloaded_files = []
     for platform, info in version_info.items():
         save_path = info["filename"]
         if download_file(info["url"], save_path):
             downloaded_files.append(save_path)
     
-    # 确保所有文件都下载成功
-    if len(downloaded_files) != len(DOWNLOAD_URLS):
-        print(f"部分文件下载失败，共成功 {len(downloaded_files)} 个，需要 {len(DOWNLOAD_URLS)} 个")
-        # 清理已下载的文件
-        for file in downloaded_files:
-            if os.path.exists(file):
-                os.remove(file)
+    # 至少需要成功下载1个文件才继续（避免完全失败的情况）
+    if not downloaded_files:
+        print("所有文件下载失败，取消备份")
         return
     
     # 创建release并上传文件
@@ -177,3 +188,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
