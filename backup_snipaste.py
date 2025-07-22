@@ -30,7 +30,6 @@ def extract_version_and_filename(url):
         return None, None
     
     # 增强正则：支持 x.y.z（如2.10.8）、x.y（如2.4），兼容不同后缀和平台格式
-    # 匹配模式：Snipaste-版本号-（可选平台）.后缀
     pattern = r"Snipaste-(\d+\.\d+(?:\.\d+)?)(?:-([\w_]+))?\.(zip|dmg|tar\.gz|AppImage)"
     match = re.search(pattern, url)
     
@@ -89,7 +88,7 @@ def download_file(url, save_path):
         return False
 
 def create_release_and_upload(version, files):
-    """在GitHub上创建Release并上传文件"""
+    """在GitHub上创建Release并上传文件（修复参数名称）"""
     try:
         # 初始化GitHub客户端
         g = Github(os.environ['GITHUB_TOKEN'])
@@ -101,9 +100,9 @@ def create_release_and_upload(version, files):
                 print(f"版本 v{version} 已存在，无需重复创建")
                 return False
         
-        # 创建新的release
+        # 创建新的release - 使用正确的参数名"tag"而非"tag_name"
         release = repo.create_git_release(
-            tag_name=f"v{version}",
+            tag=f"v{version}",  # 修复：将tag_name改为tag
             name=f"Snipaste v{version}",
             message=f"自动备份的 Snipaste v{version} 版本",
             draft=False,
@@ -147,7 +146,7 @@ def main():
         print("未获取到任何有效版本信息，退出")
         return
     
-    # 检查所有平台是否版本一致（允许部分平台失败，但成功的必须版本统一）
+    # 检查所有平台是否版本一致
     versions = list(set(info["version"] for info in version_info.values()))
     if len(versions) != 1:
         print(f"检测到不一致的版本: {versions}，取消执行备份")
@@ -162,14 +161,14 @@ def main():
         print(f"版本 {current_version} 已备份，无需重复操作")
         return
     
-    # 下载所有可用文件（即使部分平台失败，也继续处理成功的）
+    # 下载所有可用文件
     downloaded_files = []
     for platform, info in version_info.items():
         save_path = info["filename"]
         if download_file(info["url"], save_path):
             downloaded_files.append(save_path)
     
-    # 至少需要成功下载1个文件才继续（避免完全失败的情况）
+    # 至少需要成功下载1个文件才继续
     if not downloaded_files:
         print("所有文件下载失败，取消备份")
         return
