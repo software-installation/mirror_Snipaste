@@ -5,9 +5,8 @@ on:
     - cron: '0 0 * * *'  # 每天UTC时间0点运行
   workflow_dispatch:  # 允许手动触发
 
-# 增加权限配置，确保有创建Release的权限
 permissions:
-  contents: write  # 授予内容写入权限，用于创建Release和上传文件
+  contents: write  # 确保内容写入权限
 
 jobs:
   check-and-release:
@@ -43,70 +42,69 @@ jobs:
             ["linux"]="https://dl.snipaste.com/linux"
           )
           
+          # 创建并进入文件目录，简化路径处理
           mkdir -p snipaste_files
-          > versions.txt
-          > filenames.txt
+          cd snipaste_files
           
+          # 下载文件
           for platform in "${!urls[@]}"; do
             echo "Downloading $platform..."
-            final_url=$(curl -sIL -o /dev/null -w "%{url_effective}" "${urls[$platform]}")
+            final_url="${urls[$platform]}"
+            final_url=$(curl -sIL -o /dev/null -w "%{url_effective}" "$url")
             filename=$(basename "$final_url")
-            # 下载文件并验证是否成功
-            if ! curl -L -o "snipaste_files/$filename" "${urls[$platform]}"; then
+            
+            # 下载文件并验证
+            if ! curl -L -o "$filename" "$url"; then
               echo "Error: 下载 $platform 失败"
               exit 1
             fi
-            # 检查文件是否存在且非空
-            if [ ! -s "snipaste_files/$filename" ]; then
-              echo "Error: 文件 snipaste_files/$filename 不存在或为空"
+            if [ ! -s "$filename" ]; then
+              echo "Error: 文件 $filename 为空或不存在"
               exit 1
             fi
             
             echo "Downloaded file: $filename"
+            echo "$filename" >> ../file_list.txt
             
+            # 提取版本号
             version=$(echo "$filename" | sed -E 's/^Snipaste-([0-9]+\.[0-9]+(\.[0-9]+)?).*$/\1/')
             if ! echo "$version" | grep -qE '^[0-9]+\.[0-9]+(\.[0-9]+)?$'; then
-              echo "Error: 无法从文件名 $filename 中提取有效版本号"
+              echo "Error: 无法从文件名 $filename 提取版本号"
               exit 1
             fi
-            
-            echo "Extracted version for $platform: $version"
-            echo "${platform}_version=$version" >> versions.txt
-            echo "${platform}_filename=$filename" >> filenames.txt
+            echo "$version" >> ../version_list.txt
           done
           
-          # 调试：确认文件列表
-          echo "===== 下载的文件列表 ====="
-          ls -l snipaste_files/
-          echo "=========================="
+          # 返回上级目录
+          cd ..
           
-          version_list=$(awk -F'=' '/_version/ {print $2}' versions.txt | sort -u)
+          # 验证所有版本一致
+          version_list=$(sort -u version_list.txt)
           version_count=$(echo "$version_list" | wc -l | tr -d '[:space:]')
-          
           if [ "$version_count" -ne 1 ]; then
-            echo "Error: 各平台版本号不一致！"
-            echo "检测到的版本号: $version_list"
+            echo "Error: 版本不一致 - $version_list"
             exit 1
           fi
-          
           NEW_VERSION=$(echo "$version_list" | head -n 1 | tr -d '[:space:]')
-          if [ -z "$NEW_VERSION" ]; then
-            echo "Error: 未能提取有效的新版本号"
-            exit 1
-          fi
           
-          echo "Detected version: $NEW_VERSION"
+          # 准备文件列表（使用相对路径）
+          files_to_upload=$(cat file_list.txt | while read -r file; do echo "snipaste_files/$file"; done | tr '\n' ' ')
+          
+          # 调试信息 - 确认文件存在且路径正确
+          echo "===== 最终文件列表及状态 ====="
+          for file in $files_to_upload; do
+            if [ -f "$file" ]; then
+              echo "存在: $file (大小: $(du -h "$file" | cut -f1))"
+            else
+              echo "不存在: $file"
+            fi
+          done
+          echo "=============================="
+          
           echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "files_to_upload=$files_to_upload" >> $GITHUB_OUTPUT
 
-          # 生成文件路径列表，确保每个路径正确
-          files_to_upload=$(awk -F'=' '/_filename/ {print "snipaste_files/" $2}' filenames.txt | tr '\n' ' ')
-          echo "files=$files_to_upload" >> $GITHUB_OUTPUT
-          # 调试：打印要上传的文件路径
-          echo "===== 要上传的文件路径 ====="
-          echo "$files_to_upload"
-          echo "=========================="
-
-      - name: Create release if new version
+      - name: Create release with assets
         if: steps.check_version.outputs.new_version != steps.get_latest_release.outputs.latest_release
         uses: softprops/action-gh-release@v1
         with:
@@ -119,6 +117,7 @@ jobs:
             - Windows x86
             - macOS
             - Linux
-          files: ${{ steps.check_version.outputs.files }}
+          # 明确列出每个文件，避免通配符问题
+          files: ${{ steps.check_version.outputs.files_to_upload }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
